@@ -26,7 +26,7 @@
 #define trigger 3     //PD3
 #define magSensor 2   //PD2
 #define rev 4         //PD4
-#define mosfet 10     //PB2
+#define mosfet 11     //PB2
 #define threePosOne 21//ADC7
 #define threePosTwo 20//ADC6
 #define OLED_RESET 16 //PC2
@@ -56,7 +56,11 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_2_4MS, TCS34725_GAIN_1X);
 
 //Stepper Perameraters
-#define stepsTillChamber 80
+#define loadingStepMaximum 80
+#define shootStepMinimum 16
+
+int loadingStepsLeft = 0;
+int shootStepLeft = 0;
 
 //Buttons and switches
 bool buttonState[9];
@@ -68,13 +72,28 @@ MAG_ROUND_STATE magState = MANY;
 enum FIRE_MODE {SEMI,AUTO,BURST};
 FIRE_MODE fireMode = SEMI;
 
+enum CHAMBER_STATE {EMPTY,CHAMBERED,WCHAMBERED,WEMPTY,LOADING,SHOOTING};
+CHAMBER_STATE chamberState = EMPTY;
+
 //General Iterator
 int i;
 
 //Safety
 bool saftey = false;
 //Shooting PWM
-int speedPWM = 20;
+int speedPWM = 200;
+//NumberOfRounds
+int numberOfRounds = 0;
+
+//StepperControl
+int stepCount = 0;
+
+//Timers
+Timer stepIntervalMagLoad(millis);
+
+//Time Constants
+#define timeBetweenSteps 2
+#define magLoadDelay 100
 
 void setup() {
   //OLED Display
@@ -82,6 +101,7 @@ void setup() {
   display.clearDisplay();
   
   pinMode(mosfet,OUTPUT);
+  digitalWrite(mosfet,LOW);
 
   //StepperDriver
   pinMode(bridgeEnable,OUTPUT);
@@ -92,11 +112,11 @@ void setup() {
 
   digitalWrite(bridgeEnable,HIGH);
   digitalWrite(pinA,HIGH);
-  digitalWrite(pinB,LOW);
-  digitalWrite(pinC,HIGH);
+  digitalWrite(pinB,HIGH);
+  digitalWrite(pinC,LOW);
   digitalWrite(pinD,LOW);
   
-  digitalWrite(mosfet,LOW);
+ 
 
   
   pinMode(buttonYellow,INPUT_PULLUP);
@@ -111,6 +131,9 @@ void setup() {
 
   //Start LED Display
   alpha4.begin(0x71);
+
+  //StartTimers
+  stepIntervalMagLoad.begin();
   
   //Determine system states
   buttonState[0] = !digitalRead(buttonYellow);
@@ -130,12 +153,13 @@ void setup() {
   
   //Run Update Functions
   handleFiremodeChange();
-  updateLEDDisplay(1);
+  updateLEDDisplay(numberOfRounds);
   updateOLED();
 }
 
 void loop() {
   checkSwitches();
+  checkTimers();
 }
 
 void checkSwitches(){
@@ -158,16 +182,93 @@ void checkSwitches(){
   if(buttonState[4] > buttonPrevious[4]) handleRevPress();
   else if(buttonState[4] < buttonPrevious[4]) handleRevRelease();
   if(buttonState[5] > buttonPrevious[5]) handleMagInsertion();
-  else if(buttonState[5] > buttonPrevious[5]) handleMagRemoval();
-  if(buttonState[6] > buttonPrevious[6]) handleChambering();
-  if((buttonState[7] > buttonPrevious[7]) || (buttonState[7] < buttonPrevious[7]) || 
-  (buttonState[8] > buttonPrevious[8]) || (buttonState[8] < buttonPrevious[8])) 
-  handleFiremodeChange();
+  else if(buttonState[5] < buttonPrevious[5]) handleMagRemoval();
+  if(buttonState[6] > buttonPrevious[6]) handleGateClose();
+  if((buttonState[7] != buttonPrevious[7]) || 
+  (buttonState[8] != buttonPrevious[8])) handleFiremodeChange();
   
   //Copy current to previous
   for(i = 0; i < 9; i++){
     buttonPrevious[i] = buttonState[i];
   }
+}
+
+void checkTimers(){
+  //stepIntervalMagLoad Mag Load Part
+  if(chamberState == WCHAMBERED || chamberState == WEMPTY){
+    if(stepIntervalMagLoad > magLoadDelay){
+      if(chamberState == WCHAMBERED){
+        handleColorCheck();
+        chamberState = CHAMBERED;
+      }else{
+        chamberState = LOADING;
+        stepIntervalMagLoad.reset();
+        loadingStepsLeft = loadingStepMaximum;
+      }
+    }
+  }else if(chamberState == LOADING){
+    if(stepIntervalMagLoad > timeBetweenSteps){
+      if(loadingStepsLeft > 0){
+        doStep();
+        loadingStepsLeft--;
+        stepIntervalMagLoad.reset();
+      }else{
+        chamberState = EMPTY;
+        numberOfRounds = 0;
+        updateLEDDisplay(numberOfRounds);
+      }
+    }
+  }else if(chamberState == SHOOTING){
+    if(stepIntervalMagLoad > timeBetweenSteps){
+      if(shootStepLeft > 0){
+        doStep();
+        shootStepLeft--;
+        stepIntervalMagLoad.reset();
+      }else{
+        numberOfRounds--;
+        updateLEDDisplay(numberOfRounds);   
+        chamberState = LOADING;
+        loadingStepsLeft = loadingStepMaximum;
+      }
+    }
+  }
+}
+
+void doStep(){
+  switch(stepCount){
+    case 0:
+      stepCount++;
+      digitalWrite(pinA,LOW);
+      digitalWrite(pinB,HIGH);
+      digitalWrite(pinC,HIGH);
+      digitalWrite(pinD,LOW);
+      break;
+    case 1:
+      stepCount++;
+      digitalWrite(pinA,LOW);
+      digitalWrite(pinB,LOW);
+      digitalWrite(pinC,HIGH);
+      digitalWrite(pinD,HIGH);
+      break;
+    case 2:
+      stepCount++;
+      digitalWrite(pinA,HIGH);
+      digitalWrite(pinB,LOW);
+      digitalWrite(pinC,LOW);
+      digitalWrite(pinD,HIGH);
+      break;
+    case 3:
+      stepCount = 0;
+      digitalWrite(pinA,HIGH);
+      digitalWrite(pinB,HIGH);
+      digitalWrite(pinC,LOW);
+      digitalWrite(pinD,LOW);
+      break;
+  }
+}
+
+void handleColorCheck(){
+  
 }
 
 void handleYellowButtonPress(){
@@ -179,11 +280,11 @@ void handleBlueButtonPress(){
 }
 
 void handleBlackButtonPress(){
-  
+  handleMagInsertion();
 }
 
 void handleTriggerPress(){
-  
+  chamberState = SHOOTING;
 }
 
 void handleRevPress(){
@@ -193,19 +294,36 @@ void handleRevPress(){
 }
 
 void handleRevRelease(){
-  analogWrite(mosfet,0);
+  digitalWrite(mosfet,LOW);
 }
 
 void handleMagInsertion(){
-  
+  magState = MANY;
+  if(buttonState[6]){
+    numberOfRounds = 13;
+    chamberState = WCHAMBERED;
+  }else{
+    numberOfRounds = 12;
+    chamberState = WEMPTY;
+  }
+  stepIntervalMagLoad.reset();
+  updateLEDDisplay(numberOfRounds);
 }
 
 void handleMagRemoval(){
-
+  magState = KNOWN;
+  if(buttonState[6]){
+    numberOfRounds = 1;
+    chamberState = CHAMBERED;
+  }else{
+    numberOfRounds = 0;
+    chamberState = EMPTY;
+  }
+  updateLEDDisplay(numberOfRounds);
 }
 
-void handleChambering(){
-  
+void handleGateClose(){
+  chamberState = CHAMBERED;
 }
 
 void handleFiremodeChange(){
