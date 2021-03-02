@@ -53,7 +53,11 @@ Adafruit_AlphaNum4 alpha4 = Adafruit_AlphaNum4();
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 //Color Sensor Definition
-Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_2_4MS, TCS34725_GAIN_1X);
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_2_4MS, TCS34725_GAIN_60X);
+
+uint16_t r, g, b, c;
+
+#define RED_THRESH 530
 
 //Stepper Perameraters
 #define loadingStepMaximum 80
@@ -77,16 +81,20 @@ CHAMBER_STATE chamberState = EMPTY;
 
 //General Iterator
 int i;
-
+//
+bool initialChambering = false;
 //Safety
 bool saftey = false;
 //Shooting PWM
-int speedPWM = 200;
+int speedPWM = 100;
 //NumberOfRounds
 int numberOfRounds = 0;
 
 //StepperControl
 int stepCount = 0;
+
+//Shotcount
+int shotCount = 0;
 
 //Timers
 Timer stepIntervalMagLoad(millis);
@@ -116,9 +124,6 @@ void setup() {
   digitalWrite(pinC,LOW);
   digitalWrite(pinD,LOW);
   
- 
-
-  
   pinMode(buttonYellow,INPUT_PULLUP);
   pinMode(buttonBlue,INPUT_PULLUP);
   pinMode(buttonBlack,INPUT_PULLUP);
@@ -131,6 +136,9 @@ void setup() {
 
   //Start LED Display
   alpha4.begin(0x71);
+
+  //Start colorSensor
+  tcs.begin();
 
   //StartTimers
   stepIntervalMagLoad.begin();
@@ -153,7 +161,7 @@ void setup() {
   
   //Run Update Functions
   handleFiremodeChange();
-  updateLEDDisplay(numberOfRounds);
+  updateLEDDisplay();
   updateOLED();
 }
 
@@ -179,6 +187,7 @@ void checkSwitches(){
   if(buttonState[1] > buttonPrevious[1]) handleBlueButtonPress();
   if(buttonState[2] > buttonPrevious[2]) handleBlackButtonPress();
   if(buttonState[3] > buttonPrevious[3]) handleTriggerPress();
+  else if(buttonState[3]) handleTriggerDown();
   if(buttonState[4] > buttonPrevious[4]) handleRevPress();
   else if(buttonState[4] < buttonPrevious[4]) handleRevRelease();
   if(buttonState[5] > buttonPrevious[5]) handleMagInsertion();
@@ -196,12 +205,17 @@ void checkSwitches(){
 void checkTimers(){
   //stepIntervalMagLoad Mag Load Part
   if(chamberState == WCHAMBERED || chamberState == WEMPTY){
+    //If working on chambering
     if(stepIntervalMagLoad > magLoadDelay){
+      //If delay time has passed raise the initialChambering flag
       if(chamberState == WCHAMBERED){
+        //If it was already chambered
         handleColorCheck();
         chamberState = CHAMBERED;
       }else{
+        //If it wasnt already chambered start the chambering
         chamberState = LOADING;
+        //Begin Stepping
         stepIntervalMagLoad.reset();
         loadingStepsLeft = loadingStepMaximum;
       }
@@ -215,7 +229,9 @@ void checkTimers(){
       }else{
         chamberState = EMPTY;
         numberOfRounds = 0;
-        updateLEDDisplay(numberOfRounds);
+        shotCount = 0;
+        digitalWrite(bridgeEnable,LOW);
+        updateLEDDisplay();
       }
     }
   }else if(chamberState == SHOOTING){
@@ -226,7 +242,7 @@ void checkTimers(){
         stepIntervalMagLoad.reset();
       }else{
         numberOfRounds--;
-        updateLEDDisplay(numberOfRounds);   
+        updateLEDDisplay();
         chamberState = LOADING;
         loadingStepsLeft = loadingStepMaximum;
       }
@@ -240,7 +256,7 @@ void doStep(){
       stepCount++;
       digitalWrite(pinA,LOW);
       digitalWrite(pinB,HIGH);
-      digitalWrite(pinC,HIGH);
+      digitalWrite(pinC,LOW);
       digitalWrite(pinD,LOW);
       break;
     case 1:
@@ -248,11 +264,11 @@ void doStep(){
       digitalWrite(pinA,LOW);
       digitalWrite(pinB,LOW);
       digitalWrite(pinC,HIGH);
-      digitalWrite(pinD,HIGH);
+      digitalWrite(pinD,LOW);
       break;
     case 2:
       stepCount++;
-      digitalWrite(pinA,HIGH);
+      digitalWrite(pinA,LOW);
       digitalWrite(pinB,LOW);
       digitalWrite(pinC,LOW);
       digitalWrite(pinD,HIGH);
@@ -260,7 +276,7 @@ void doStep(){
     case 3:
       stepCount = 0;
       digitalWrite(pinA,HIGH);
-      digitalWrite(pinB,HIGH);
+      digitalWrite(pinB,LOW);
       digitalWrite(pinC,LOW);
       digitalWrite(pinD,LOW);
       break;
@@ -268,7 +284,45 @@ void doStep(){
 }
 
 void handleColorCheck(){
-  
+  //Dont check if rounds are less than 6
+  if(numberOfRounds >= 6){
+    tcs.getRawData(&r, &g, &b, &c);
+    //If rounds equal 6 then trasition just happened. Check for that
+    if(numberOfRounds == 6){
+      //Check if round is there
+      if (r < RED_THRESH){
+        // Round is no there
+        magState = KNOWN;
+      }else{
+        //This happens only if there should be only 6 rounds left but somehow there is more
+        numberOfRounds++;
+      }
+    }else{
+      //Check to make sure the rounds are still there
+      if (r < RED_THRESH){
+        //This means the round is gone
+        if(initialChambering == true){
+          //Mag was just being checked for the first time
+          magState = LUNKNOWN;
+          numberOfRounds = 6;
+        }else{
+          //Previous number was wrong but now we know this one is right
+          magState = KNOWN;
+          numberOfRounds = 6;
+        }
+      }
+    }
+    initialChambering = false;
+  }
+  updateLEDDisplay();
+}
+
+void handleStepperPower(){
+  if(chamberState == EMPTY){
+    digitalWrite(bridgeEnable,LOW);
+  }else{
+    digitalWrite(bridgeEnable,LOW);
+  }
 }
 
 void handleYellowButtonPress(){
@@ -284,7 +338,28 @@ void handleBlackButtonPress(){
 }
 
 void handleTriggerPress(){
-  chamberState = SHOOTING;
+  if(fireMode == SEMI){
+    if(chamberState == CHAMBERED){
+      if(!saftey){
+        chamberState = SHOOTING;
+      }
+    }
+  }else if(fireMode == BURST){
+    if(!saftey){
+      chamberState = SHOOTING;
+      shotCount = 1;
+    }
+  }
+}
+
+void handleTriggerDown(){
+  if(fireMode == AUTO){
+    if(chamberState == CHAMBERED){
+      if(!saftey){
+        chamberState = SHOOTING;
+      }
+    }
+  }
 }
 
 void handleRevPress(){
@@ -298,7 +373,9 @@ void handleRevRelease(){
 }
 
 void handleMagInsertion(){
+  digitalWrite(bridgeEnable,HIGH);
   magState = MANY;
+  initialChambering = true;
   if(buttonState[6]){
     numberOfRounds = 13;
     chamberState = WCHAMBERED;
@@ -307,7 +384,7 @@ void handleMagInsertion(){
     chamberState = WEMPTY;
   }
   stepIntervalMagLoad.reset();
-  updateLEDDisplay(numberOfRounds);
+  updateLEDDisplay();
 }
 
 void handleMagRemoval(){
@@ -318,12 +395,19 @@ void handleMagRemoval(){
   }else{
     numberOfRounds = 0;
     chamberState = EMPTY;
+    shotCount = 0;
+    digitalWrite(bridgeEnable,LOW);
   }
-  updateLEDDisplay(numberOfRounds);
+  updateLEDDisplay();
 }
 
 void handleGateClose(){
   chamberState = CHAMBERED;
+  if(shotCount > 0){
+    chamberState = SHOOTING;
+    shotCount--;
+  }
+  handleColorCheck();
 }
 
 void handleFiremodeChange(){
@@ -351,33 +435,32 @@ void updateOLED(){
   }else if (fireMode == AUTO){
     display.println(F("AUTO"));
   }else{
-    display.println(F("BURST"));
+    display.println(F("BRST"));
   }
   
-  /*
   display.setTextSize(1);
   
 
   //if (modeSetState) display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);//Inverse for PRG
   
-  display.setCursor(0,16);//Fire Rate
-  display.println(F("RATE:  "));
-  display.setCursor(30,16);
-  display.println(buttonState[7]);
-  
-  display.setCursor(0,25);//PWM
+  display.setCursor(0,16);//PWM
   display.println(F("PWM:  %"));
+  display.setCursor(24,16);
+  display.println(100*speedPWM/256);
+
+  /*display.setCursor(0,25);//Debug
+  display.println(F("PWM:"));
   display.setCursor(24,25);
-  display.println(100*speedPWM/256);*/
+  display.print(r);*/
   
   display.display();
 }
 
-void updateLEDDisplay(int n){
+void updateLEDDisplay(){
   //
-  if (n > 9){
+  if (numberOfRounds > 9){
     //If there are two digits write the sencond digit
-    writeSevenSegment(n / 10, DIGIT_ADDR_HIGH);
+    writeSevenSegment(numberOfRounds / 10, DIGIT_ADDR_HIGH);
   }else if (magState == KNOWN){
     //If the mag state is known add a dot to notify the user
     alpha4.writeDigitRaw(DIGIT_ADDR_HIGH, DIGIT_DOT);
@@ -388,8 +471,8 @@ void updateLEDDisplay(int n){
     //If no digit needs to be printed clear the didit
     alpha4.writeDigitRaw(DIGIT_ADDR_HIGH, DIGIT_CLEAR);
   }
-  //Print the least significant didit
-  writeSevenSegment(n % 10, DIGIT_ADDR_LOW);
+  //Print the least significant digit
+  writeSevenSegment(numberOfRounds % 10, DIGIT_ADDR_LOW);
   alpha4.writeDisplay();
 }
 
