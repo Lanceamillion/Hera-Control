@@ -286,7 +286,7 @@ void doStep(){
 void handleColorCheck(){
   //Dont check if rounds are less than 6
   if(numberOfRounds >= 6){
-    tcs.getRawData(&r, &g, &b, &c);
+    //tcs.getRawData(&r, &g, &b, &c);
     //If rounds equal 6 then trasition just happened. Check for that
     if(numberOfRounds == 6){
       //Check if round is there
@@ -326,11 +326,11 @@ void handleStepperPower(){
 }
 
 void handleYellowButtonPress(){
-  
+  r=100;
 }
 
 void handleBlueButtonPress(){
-  
+  r=1000; 
 }
 
 void handleBlackButtonPress(){
@@ -447,8 +447,8 @@ void updateOLED(){
   display.println(F("PWM:  %"));
   display.setCursor(24,16);
   display.println(100*speedPWM/256);
-
-  /*display.setCursor(0,25);//Debug
+  /*
+  display.setCursor(0,25);//Debug
   display.println(F("PWM:"));
   display.setCursor(24,25);
   display.print(r);*/
